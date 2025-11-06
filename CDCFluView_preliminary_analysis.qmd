@@ -1,0 +1,230 @@
+---
+title: "CDCFluView_PreliminaryAnalysis"
+author: "Nancy Walker"
+format: 
+  pdf:
+    keep-tex: false
+    number-sections: false
+execute:
+  echo: true
+  warning: false
+editor:
+  markdown:
+    wrap: sentence
+---
+
+## Preliminary Analysis of CDC FLUVIEW Dataset
+
+***Perform an preliminary analysis on your proposed dataset.***
+
+The dataset researched comes from the CDC FLUVIEW.
+
+https://gis.cdc.gov/grasp/fluview/fluportaldashboard.html
+
+Data were accessed via the cdcfluview R package (v 0.x.x) on October 31, 2025, using the Influenza-Like Illness Network (ILINet) endpoint. Analyses reflect weekly ILI values available up to that date. 
+
+Weekly ILI data for California were obtained from CDC ILINet (1997–present). For modeling, data from 2010 to 2025 were used to ensure consistent reporting and reliable seasonal structure. This dataset displays weekly influenza data. Influenza incidence can inform public health decision-making, such as surveillance, hospital capacity, and vaccination strategies. Although the CDC FLUVIEW provides influenza data nationwide, tailoring a project to Region 9 (California, Arizona, Hawaii, Nevada, and Pacific territories) provides stable weekly data that models well and yields a high-quality forecasting model.  
+
+*Use the dataset you are proposing for your final project for a preliminary analysis using one of the methods covered in this weeks readings (Time Series Linear Model or Exponential Smoothing with auto-selection). If your dataset contains multiple time series, you may choose to focus on just one for this discussion.*
+
+*Start with a brief description of your dataset and the model you plan to use.*
+
+This dataset displays clean, long, autoregressive, and epidemiologically meaningful weekly influenza data.
+Reports are made weekly over multiple seasons for over 10 years.
+Influenza incidence can inform public health decision-making, such as surveillance, hospital capacity, and vaccination strategies.
+Although the CDC FLUVIEW provides influenza data nationwide, tailoring a project to Region 9 will yield stable weekly data that may model well and yield a high-quality forecasting model.
+
+Possible forecast questions:
+
+-   Forecast weekly influenza-like illness for Region 9 over the next 12 weeks.
+
+-   Evaluate how autoregressive and seasonal components explain epidemic cycles.
+
+-   How have flu peaks shifted before and after COVID-19?
+    What are the forecast suggestions for the next season?
+
+*Report on the model hyperparameters as well as the model parameters and with a sentence or two interpreting them.*
+
+***Time Series Linear Modeling: TSLM***
+
+-   The hyperparameters for modeling include trend, season(period = 52), and month.
+
+-   There are other parameters not used in preliminary analysis that may be useful for the final project including holidays, weather, lags, etc.
+
+***Exponential Smoothing State Space Model (ETS)***
+
+-   automatically optimized hyperparameters
+
+-   Hyperparameters: alpha, beta, gamma, phi, and period
+
+*Provide a well formatted plot of the data that includes a few periods of the training data, the a forecast for one period (or a suitable forecast horizon if no seasonality is present).*
+
+```{r setup}
+#| echo: false
+
+library(fpp3)
+library(readr)
+library(janitor)   # for clean_names()
+library(tsibble)
+# install.packages("MMWRweek")
+library(MMWRweek) 
+library(ggplot2)
+library(gt)
+```
+
+## Read in the data
+
+Weekly ILI data for California were obtained from CDC ILINet (1997 – present).
+For modeling, data from 2010 – 2025 were used to ensure consistent reporting and reliable seasonal structure.
+
+ILI is the Influenza-Like illness network
+
+```{r}
+# Read the data 
+# Used ChatGPT to figure out how to import a workable version of the data set for
+# for time series analysis 
+ili_raw <- read_csv("data/raw/ILINet.csv", 
+                   skip =1, 
+                   na = c("", "NA"),
+                   show_col_types = FALSE)
+
+# Make column names easy to use 
+# For example, % Weighted ILI to percent_weighted_ili
+ili <- ili_raw |>
+  clean_names() |>
+  # keep only Region 9 
+  # (California, Arizona, Hawaii, Nevada, and pacific territories) 
+  filter(region_type == "HHS Regions", region == "Region 9") |>
+  # Create a simple sequence for weeks (1:nrow)
+  mutate(
+    # Create a true calendar date for the CDC week ending (MMWR day 7 = Sunday)
+    week_end = MMWRweek2Date(MMWRyear = year, MMWRweek = week, MMWRday = 7)
+  ) |>
+  filter(!is.na(week_end)) |>
+  as_tsibble(index = week_end)
+
+head(ili)
+```
+
+## Plot Data
+
+```{r}
+ili |> 
+  ggplot(aes(week_end, percent_unweighted_ili)) + 
+  geom_line() + 
+  # Apply the generalized additive model "gam"
+  # Draw a flexible smooth curve throughout the data usign cubic splines 
+  geom_smooth(method = "gam", formula = y ~ s(x, bs = "cs"), se= FALSE) + 
+  labs(title= "Weekly Weighted ILI (%) _ HHS Region 9", 
+          subtitle = "Smoothed Trend Using Generalized Additive Model",
+          x = "Week Ending Date",
+          y = "Weighted ILI (%)")
+```
+
+## Decomposition Plot
+
+```{r, fig.width= 10, fig.height=6}
+ili |> 
+  model (stl = STL(percent_weighted_ili)) |> 
+  components() |> 
+  autoplot()
+```
+
+## TSLM model evaluation
+
+```{r}
+
+
+# add time-derived features 
+ili_prep <- ili |>
+  mutate(
+    month = factor(month(week_end, label = TRUE, abbr = TRUE),
+                   levels = month.abb),
+  )
+
+# split
+val_cutoff <- ymd("2023-01-01")
+ili_trn <- ili_prep |> filter(week_end < val_cutoff)
+ili_tst <- ili_prep |> filter(week_end >= val_cutoff)
+
+# fit models 
+ili_fit <- ili_trn |>
+  model(
+    tslm_basic = TSLM(percent_weighted_ili ~ trend() + season(period = 52)),
+    tslm_month = TSLM(percent_weighted_ili ~ month + trend()),
+    ets_auto   = ETS(percent_weighted_ili)
+  )
+
+
+ili_fit |> report()
+```
+
+```{r}
+ili_fit['tslm_month'] |> report()
+```
+
+## TSLM Forecast
+
+```{r}
+ili_fc <- ili_fit |> forecast(new_data = ili_tst)
+accuracy(ili_fc, ili_tst) |> arrange(RMSE) 
+```
+
+The plot above shows what model performs best on unseen data.
+All the tslm models performer similarly (RMSE is about 1.5, MAPE is about 37-39%).
+ETS performs much worse (RMSE is about 5% and MAPE is about -194%.
+
+Basic performs the best with the lowest RMSE, Next is month.
+Adding complexity for mo_week doesn't improve the model.
+
+## R-squared for ETS
+
+ETS doesn't report `R-squared` because it doesn't have regressors, but we can still calculate the coefficient of determination from the residuals.
+
+```{r}
+fit_ets <- ili_fit['ets_auto'] |> augment()
+Rsq <- cor(fit_ets$percent_weighted_ili, fit_ets$.fitted)^2
+Rsq
+```
+
+R squared is high but ETS tends to fit historical data well.
+However, test-set RMSE = 5.04 shows that the model doesn't generalize well and likely over fits or struggles post COVID shits.
+
+# tlsm_month forecast visual
+
+```{r}
+# 52 future weeks on the same index
+future <- new_data(ili, 52) |>
+  mutate(
+    month = factor(month(week_end, label = TRUE, abbr = TRUE), 
+                   levels = month.abb)
+  )
+
+# Forecast with covariates supplied
+ili_fc_best <- ili_fit |> select(tslm_month) |> forecast(new_data = future)
+
+#Plot forecast future values (Next 52 weeks)
+autoplot(ili_fc_best, ili) + labs(
+    title = "Forecasted Weighted ILI (%) – HHS Region 9",
+    subtitle = "52-Week Forecast Using TSLM with Monthly Seasonality",
+    x = "Week Ending Date",
+    y = "Weighted ILI (%)"
+  )
+```
+
+## *Write a few sentences about what your analysis reveals about the time series.*
+
+Time Series Linear Modeling (TSLM) and Exponential Smoothing State Space Modeling (ETS) were performed on this dataset. Hyperparameters for TSLM modeling included trend, season (period =52), and month. Parameters available but not used in the preliminary analysis include holidays, weather, lags, etc. ETS automatically optimized hyperparameters. 
+
+Of the chosen models, TSLM with monthly seasonality performed the best, although all the TSLM models performed similarly (RMSE is about 1.5, MAPE is about 37-39%). ETS performed much worse (RMSE is about 5% and MAPE is about -194%.
+
+ETS did have a high R-squared because it tends to fit historical data well. However, the test-set RMSE of 5.04 indicates the model doesn’t generalize well and is likely to overfit or struggle with post-COVID-19 shifts. 
+
+Preliminary analysis shows that basic TLSM performs similarly to TLSM monthly data. This model’s R-squared is about 50%; roughly 50% of the variance in influenza-like illness (ILI) rates is explained. Although broad seasonal patterns are captured, out-of-sample accuracy is modest, indicating that the model is not generalizing well. Poor generalization may be due to overfitting or to difficulties in making predictions post-COVID-19 pandemic, indicating structural changes in disease reporting during the pandemic. A 52-week forecast of the weighted influenza-like illness in Region 9 projects a moderate seasonal rise in ILI rates during the upcoming flu season. It is consistent with historical patterns of winter peaks, but forecast intervals widen over time, indicating the uncertainty of long-horizon predictions.
+
+## Refrences
+
+OpenAI. (2025). ChatGPT (October 31 version) [LargeLanguage Model]
+
+Centers for Disease Control and Prevention. (n.d.). FluView – Weekly U.S. influenza surveillance report. Retrieved October 31, 2025, from https://gis.cdc.gov/grasp/fluview/fluportaldashboard.html
+
