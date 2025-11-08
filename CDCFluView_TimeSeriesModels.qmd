@@ -1,0 +1,276 @@
+---
+title: "CDC Flu View Times Series Models"
+author: "Niat Kashsay, Celina Velazquez, Nancy Walker"
+format: 
+  pdf:
+    keep-tex: true
+    include-in-header:
+      text: |
+        \usepackage{float}      % enables [H]
+        \usepackage{placeins}   % provides \FloatBarrier
+        \floatplacement{figure}{H}
+        \floatplacement{table}{H}
+execute:
+  echo: true
+  results: asis                    # show results inline
+  warning: false
+  message: false
+---
+
+# Applying the Times Series Models to CDC Flu View Dataset 
+
+In this document, several models will be applied and compared. The models performed include ETS (Error, Trend, and Seasonality), TSLM (Time Series Linear Model), and ARIMA (Autoregressive Integrated Moving Average). 
+
+```{r}
+#| message: false
+library(tidyverse)
+library(fpp3)
+library(janitor)   # for clean_names()
+library(MMWRweek) 
+library(gt)
+```
+
+# Forecasting CDC FLu View Dataset 
+```{r}
+# Read the data 
+ili_raw <- read_csv("data/raw/ILINet.csv", 
+                   skip =1, 
+                   na = c("", "NA"),
+                   show_col_types = FALSE)
+
+# Make column names easy to use 
+# For example, % Weighted ILI to percent_weighted_ili
+ili <- ili_raw |>
+  clean_names() |>
+  # keep only Region 9 
+  # (California, Arizona, Hawaii, Nevada, and pacific territories) 
+  filter(region_type == "HHS Regions", region == "Region 9") |>
+  # Create a simple sequence for weeks (1:nrow)
+  mutate(
+    # Create a true calendar date for the CDC week ending (MMWR day 7 = Sunday)
+    week_end = MMWRweek2Date(MMWRyear = year, MMWRweek = week, MMWRday = 7)
+  ) |>
+  filter(!is.na(week_end)) |>
+  as_tsibble(index = week_end)
+
+# meaningful time-series measures 
+# Exclude week and year because they do not reflect flu activity 
+metrics <- c(
+  "percent_weighted_ili", "percent_unweighted_ili",
+  "age_0_4", "age_5_24", "age_25_49", "age_50_64", "age_65",
+  "ilitotal", "total_patients", "num_of_providers"
+)
+
+ili_long <- ili |> 
+  select(week_end, any_of(metrics)) |>
+  pivot_longer(cols = -week_end, names_to = 'Metric', values_to = 'Value') 
+
+# SHow every numeric colimn in ILINet Region 9 dataset plotted overtime.
+ili_long |> 
+    ggplot(aes(week_end, Value)) +
+    geom_line() +
+    facet_wrap(~ Metric, scales = "free_y") +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+This faceted line chart tracks key ILINet metrics for HHS Region 9 (CA, AZ, HI, NV, Pacific territories) over time. Panels include % weighted ILI, % unweighted ILI, age-specific ILI visit counts, total ILI visits (ilitotal), total patients, and number of providers. Age panels show large spikes around 2020–2023, consistent with COVID-era dynamics. Ili total counts the total visit counts across Region 9 (California, Arizona, Hawaii, Nevada, and Pacific territories). Total patients and providers also shift during this period, reflecting reporting changes.The primary measures the CDC uses for ILI severity are percent-weighted and unweighted ILI. These metrics show seasonal spikes every winter. For forecasting, focus on percent weighted ILI and compare ETS, TSLM (trend + yearly seasonality), and ARIMA. 
+
+Percent Weighted ILI is the official CDC influenza surveillance metric that adjusts each provider’s contribution based on the number of patient visits they report. High-volume clinics receive greater weight, while small clinics contribute proportionally less. The CDC also incorporates additional adjustments for clinic visit volume, regional population representation, provider type, and variability in week-to-week participation. As a result, % Weighted ILI provides a more stable, population-representative, and less volatile estimate of influenza-like illness activity compared to the unweighted measure, which is simply the proportion of ILI visits out of total weekly patient visits without any weighting.
+
+# ARIMA Modeling 
+
+## Create ACF/PACF plots from a training set 
+
+- Partition the dataset using period 2015-2025 as the training period and test on the most recent 12-20 weeks. 
+  - Training period: week_end = 2015-01-03 to 2025-06-28
+  - Testing period: week_end = 2025-07-05 to 2025-09-20
+  - This will include the COVID impact, recovery years, and avoid pre-2010 regime, and allow models to learn from current amplitude levels. 
+- Determine the differencing (if any) required to make the data stationary 
+- Plot ACF/PACF on the stationary time series
+- specify the modle suggestions by the ACF and PACF plots. 
+
+```{r}
+# Create a time series object for percent-weighted ILI 
+ili_trn <- ili |> 
+  select(week_end, percent_weighted_ili) |> 
+  filter(week_end >= as.Date("2015-01-03"),
+         week_end <= as.Date("2025-06-28")) |> 
+  as_tsibble(index = week_end)
+
+# Create a validation set for the model 
+ili_valid <- ili |> 
+  select(week_end, percent_weighted_ili) |> 
+  filter(week_end > as.Date("2025-06-28")) |> 
+  as_tsibble(index = week_end)
+
+# Check stationarity (fabletools:: feature(...))
+ili_trn |> 
+  features(percent_weighted_ili, c(unitroot_kpss, unitroot_ndiffs, unitroot_nsdiffs)) |> 
+  gt::gt()
+```
+The p-value is very small (<0.05), therefore KPSS test rejects the null hypothesis of stationary. This series is non stationary and requires differencing for ARIMA modeling. 
+
+ndiffs =1 or one regular difference, thesefore the overall trend/nonstationarity is level.
+
+nsdiffs = 0 or no seasonal differencing required. The series doesn't have strong deterministic seasonal unit root to require differencing. 
+
+This is expected because Influenza seasonality is real but not perfectly stable by year. Also, COVID distorted seasonal patterns. Weighted ILI has strong seasonal structure but to a seasonal unit root. 
+
+```{r}
+#| fig-height: 7
+
+# Plot differenced series and ACF/PACF plots 
+ili_trn |> 
+  gg_tsdisplay(
+    difference(percent_weighted_ili, lag = 1),
+    plot_type = "partial",
+    lag_max = 60 # see seasonal lags near 52 
+  )
+```
+
+**What models do the ACF and PACF suggest would be best, respectively?**
+
+*ACF*
+ACF plot shows a strong spike at lag 1 and rapid decay. This is a strong moving-average effect of order 1, plus a possible weak seasonal component. Model suggestion is MA(1) term (q = 1). A seasonal MA(1) at lag 52 may also be useful due to the flu seasonal signal, the smaller spikes near lags ≈ 50–53.
+
+*PACF* 
+Has a big spike at lag 1 then drops and stays within the blue bands. A AR(1) term (p = 1) model might also fit this data. 
+
+*Possible Models* 
+ACF cuts off after lag 1, PACF tails off	ARIMA(0,1,1)
+PACF cuts off after lag 1, ACF tails off	ARIMA(1,1,0)
+Both have strong lag 1 spikes	ARIMA(1,1,1)
+Seasonal spikes near 52	add seasonal MA or AR: (0,1,1)(0,0,1)[52] or (1,1,1)(0,0,1)[52]
+
+## Build the suggested ARIMA models 
+
+```{r}
+# model fit 
+ili_trn_fit <- ili_trn |> 
+  model(
+    arima_auto = ARIMA(percent_weighted_ili),
+    arima_011 = ARIMA(percent_weighted_ili~ pdq(0,1,1)),
+    arima_110  = ARIMA(percent_weighted_ili ~ pdq(1,1,0)),
+    arima_111  = ARIMA(percent_weighted_ili ~ pdq(1,1,1)),
+    arima_seas = ARIMA(percent_weighted_ili ~ pdq(0,1,1) + PDQ(0,0,1,52))
+  )
+
+# report arima_auto model
+ili_trn_fit['arima_auto'] |> report() |> 
+    knitr::kable(digits=0)
+```
+The model suggested with auto_arima is ARIMA(2,1,4)
+
+## Compare the models with RMSE and AICc 
+
+```{r}
+# Print Model Metrics AIC 
+ili_trn_fit |>
+    glance(.model, AICc) |> 
+    select(.model, AICc) |>
+    arrange(AICc) |> 
+    gt::gt() |> 
+    gt::fmt_number(columns = 2, decimals = 2)
+```
+```{r}
+ili_trn_fit |> 
+    accuracy() |> 
+    select(.model, RMSE) |> 
+    arrange(RMSE) |> 
+    gt::gt() |> 
+    gt::fmt_number(columns = 2, decimals = 2)
+```
+
+For both AICc and RMSE, lower values produce better models. In this case, arima_seas is considered the best model because it has the lowest RMSE and AICc. The AICc metric shows this by having an AICc > 36 compared to the next-best model. For RMSE, all values are close, but arima-seas is still the lowest. 
+
+## Forecast the Data
+
+Forecast Percent Weighted ILI over the validation period and compare those forecasts with the actual to evaluate model performance.
+
+```{r}
+# Forecast the 12-week validation period using the best model 
+ili_fc <- forecast(ili_trn_fit['arima_seas'], new_data = ili_valid)
+
+autoplot(ili_fc, ili_trn) + 
+  autolayer(ili_valid, percent_weighted_ili, color= "black", size = 0.3) + 
+  labs(
+    title = "Forecast of % Weighted ILI (Region 9)",
+    subtitle = "Seasonal ARIMA model forecast vs actuals (validation period)")
+```
+
+```{r}
+# Zoomed in plot 
+autoplot(ili_fc, ili_trn) +
+  autolayer(ili_valid, percent_weighted_ili, color = "black") +
+  coord_cartesian(xlim = c(as.Date("2025-06-01"), as.Date("2025-10-15"))) +
+  labs(
+    title = "Forecast of % Weighted ILI (Region 9)",
+    subtitle = "Zoomed on validation period (July–Sept 2025)")
+```
+
+### Compare Forecast and Actual Data
+
+```{r}
+# Calculate mean forecast value across 12 weeks
+ili_fc |> 
+  summarise(mean_forecast = mean(.mean, na.rm = TRUE)) |> 
+  gt::gt() |> 
+  gt::fmt_number(columns = 2, decimals = 3)
+```
+
+The forecast is projected to stay stable with a slight declining trend over the next 12-weeks 
+
+```{r}
+# Average actual values 
+ili_valid |> 
+  summarise(mean_actual = mean(percent_weighted_ili, na.rm = TRUE)) |> 
+  gt::gt() |> 
+  gt::fmt_number(columns = 2, decimals = 3)
+```
+
+However more fluctuation is seen in the actual data. 
+
+## Plot Auto ARIMA forecast 
+
+```{r}
+# Forecast the 12-week validation period using the auto arima model 
+ili_fc_auto <- forecast(ili_trn_fit['arima_auto'], new_data = ili_valid)
+
+autoplot(ili_fc_auto, ili_trn) + 
+  autolayer(ili_valid, percent_weighted_ili, color= "black", size = 0.3) + 
+  labs(
+    title = "Forecast of % Weighted ILI (Region 9)",
+    subtitle = "Auto ARIMA model forecast vs actuals (validation period)")
+
+```
+
+```{r}
+# Zoomed in plot 
+autoplot(ili_fc_auto, ili_trn) +
+  autolayer(ili_valid, percent_weighted_ili, color = "black") +
+  coord_cartesian(xlim = c(as.Date("2025-06-01"), as.Date("2025-10-15"))) +
+  labs(
+    title = "Forecast of % Weighted ILI (Region 9)",
+    subtitle = "Zoomed on validation period (July–Sept 2025)")
+```
+
+```{r}
+# Calculate mean forecast value across 12 weeks
+ili_fc_auto |> 
+  summarise(mean_forecast = mean(.mean, na.rm = TRUE)) |> 
+  gt::gt() |> 
+  gt::fmt_number(columns = 2, decimals = 3)
+```
+
+Auto arima model produced very similar results to the seasonal ARIMA model. 
+
+# Conclusion 
+
+The 12-week forecast from the seasonal ARIMA model projected a stable percent-weighted ILI, with fluctuations between 1.7 and 1.8 percent across July and September 2025. However, the observed data showed greater variability in the prevalent weight values, with unusually declining values through late July, then rising in late August and early September. While modeling effectively captured the overall level of IL activity, short-term fluctuations were underestimated. This discrepancy may be expected due to unmodeled factors temporarily affecting the week-to-week variability.
+
+# Refrences
+
+OpenAI. (2025). ChatGPT (November 7 version) [LargeLanguage Model]
+
+Centers for Disease Control and Prevention. (n.d.). FluView – Weekly U.S. influenza surveillance report. Retrieved October 31, 2025, from https://gis.cdc.gov/grasp/fluview/fluportaldashboard.html
+
