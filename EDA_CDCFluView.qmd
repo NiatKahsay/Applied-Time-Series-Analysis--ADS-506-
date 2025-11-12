@@ -1,0 +1,253 @@
+---
+title: "EDA_CDCFluView"
+author: "Niat Kashsay, Celina Velazquez, Nancy Walker"
+format: 
+  pdf:
+    keep-tex: true
+    include-in-header:
+      text: |
+        \usepackage{float}      % enables [H]
+        \usepackage{placeins}   % provides \FloatBarrier
+        \floatplacement{figure}{H}
+        \floatplacement{table}{H}
+execute:
+  echo: true
+  results: asis                    # show results inline
+  warning: false
+  message: false
+---
+
+# EDA of the CDCFluView Dataset 
+
+The dataset researched comes from the CDC FLUVIEW.
+
+https://gis.cdc.gov/grasp/fluview/fluportaldashboard.html
+
+Data was accessed via the cdcfluview R package (v 0.x.x) on October 31, 2025, using the Influenza-Like Illness Network (ILINet) endpoint. Analyses reflect weekly ILI values available up to that date. 
+
+Weekly ILI data for California were obtained from CDC ILINet (1997–present). For modeling, data from 2010 to 2025 were used to ensure consistent reporting and reliable seasonal structure. This dataset displays weekly influenza data. Influenza incidence can inform public health decision-making, such as surveillance, hospital capacity, and vaccination strategies. Although the CDC FLUVIEW provides influenza data nationwide, tailoring a project to Region 9 (California, Arizona, Hawaii, Nevada, and Pacific territories) provides stable weekly data that models well and yields a high-quality forecasting model. 
+
+## Import libraries
+
+```{r}
+#| message: false
+library(tidyverse)
+library(fpp3)
+library(janitor)   # for clean_names()
+library(MMWRweek) 
+library(gt)
+library(corrplot)
+```
+
+## Read the Data 
+
+```{r}
+ili_raw <- read_csv("data/raw/ILINet.csv", 
+                   skip =1, 
+                   na = c("", "NA"),
+                   show_col_types = FALSE)
+
+# Make column names easy to use 
+# For example, % Weighted ILI to percent_weighted_ili
+ili <- ili_raw |>
+  clean_names() |>
+  # keep only Region 9 
+  # (California, Arizona, Hawaii, Nevada, and pacific territories) 
+  filter(region_type == "HHS Regions", region == "Region 9") |>
+  # Create a simple sequence for weeks (1:nrow)
+  mutate(
+    # Create a true calendar date for the CDC week ending (MMWR day 7 = Sunday)
+    week_end = MMWRweek2Date(MMWRyear = year, MMWRweek = week, MMWRday = 7)
+  ) |>
+  filter(!is.na(week_end)) |>
+  as_tsibble(index = week_end)
+
+# head(ili) 
+```
+
+## EDA
+
+```{r}
+# View Structure 
+str(ili) 
+```
+
+Time index intervals are weekly (interval = 7D, regular = TRUE). Date is set as a tsibble index. Only Region 9 is selected. 
+
+```{r}
+# Check for null values 
+anyNA(ili)
+# Count null values 
+sum(is.na(ili))
+# Count by column 
+colSums(is.na(ili))
+```
+
+Only age_25_64 has missing values and all entries are missing. All other columns have no missing values. This variable can be excluded from the dataset.
+
+```{r}
+# drop age_25_64 column form dataset 
+ili <- ili |> select(-age_25_64)
+# Rename age_65 to age_65_plus for clarity
+ili <- ili |> 
+  rename(age_65_plus = age_65)
+```
+
+```{r}
+# View Summary 
+summary(ili)
+```
+
+There are 781 observations, which is about 15 years of data from 2010 to 2025. The frequency of the data is weekly. Both short-term fluctuations and long-term seasonality can be analysed. 
+
+*Target Variable* 
+
+The target Time series variable is percent weight ili, representing the proportion of patient visits due to influenza-like illness (ILI) in Region 9, weighted by provider volume.
+
+*Other Variables* 
+
+Predictors (potentially explanatory) — e.g., age-group counts, number of providers, total patients.
+
+Metadata or identifiers — e.g., year, week, region.
+
+Alternative measures — e.g., percent_unweighted_ili (a variant of the same phenomenon).
+
+### Trend and Seasonality 
+
+```{r}
+# Line plot of % Weighted ILI (overall trend)
+autoplot(ili, percent_weighted_ili) +
+  labs(title = "Region 9: % Weighted ILI (Weekly, 2010–2025)",
+       y = "% ILI", x = "Week Ending Date")
+
+ili |> 
+  ggplot(aes(week_end, percent_unweighted_ili)) + 
+  geom_line() + 
+  # Apply the generalized additive model "gam"
+  # Draw a flexible smooth curve throughout the data usign cubic splines 
+  geom_smooth(method = "gam", formula = y ~ s(x, bs = "cs"), se= FALSE) + 
+  labs(title= "Weekly Weighted ILI (%) _ HHS Region 9", 
+          subtitle = "Smoothed Trend Using Generalized Additive Model",
+          x = "Week Ending Date",
+          y = "Weighted ILI (%)")
+
+```
+```{r}
+# Seasonal pattern across years
+gg_season(ili, percent_weighted_ili, period = "year") +
+  labs(title = "Seasonality by Year: % Weighted ILI",
+       y = "% ILI", x = "Week of Year")
+
+# decomposition plot 
+ili |> 
+  model (stl = STL(percent_weighted_ili)) |> 
+  components() |> 
+  autoplot()
+```
+
+### Distribution and Outliers 
+
+```{r}
+# Boxplot 
+boxplot(ili$percent_weighted_ili,
+        main = "Boxplot of percent_weighted_ili")
+
+# Boxplot by year
+ili |>
+  mutate(year = factor(year(week_end))) |>
+  ggplot(aes(year, percent_weighted_ili)) +
+  geom_boxplot(outlier.alpha = 0.4, fill = "lightblue") +
+  labs(title = "% Weighted ILI by Year", x = "Year", y = "% ILI")
+
+# Histogram 
+hist(ili$percent_weighted_ili,
+     main="Histogram of percent_weighted_ili")
+
+# Histogram of %ILI values
+ili |> 
+  ggplot(aes(percent_weighted_ili)) +
+  geom_histogram(bins = 40, fill = "skyblue", color = "white") +
+  labs(title = "Distribution of % Weighted ILI", x = "% ILI")
+
+```
+### Related Series and Context
+
+**Weighted vs Unweighted Comparison** 
+```{r}
+# Compare weighted vs unweighted variables 
+ili |>
+  select(week_end, percent_weighted_ili, percent_unweighted_ili) |>
+  pivot_longer(-week_end, names_to = "metric", values_to = "value") |>
+  ggplot(aes(week_end, value, color = metric)) +
+  geom_line() +
+  labs(title = "Weighted vs Unweighted % ILI", x = "Week", y = "% ILI") 
+```
+
+```{r}
+# Reporting coverage over time
+ili |>
+  pivot_longer(c(num_of_providers, total_patients),
+               names_to = "measure", values_to = "value") |>
+  ggplot(aes(week_end, value)) +
+  geom_line() +
+  facet_wrap(~ measure, scales = "free_y", ncol = 1) +
+  labs(title = "Reporting Context: Providers & Patients", x = "Week")
+```
+
+### Age Group Insight
+
+```{r}
+age_cols <- c("age_0_4","age_5_24","age_25_49","age_50_64","age_65_plus")
+
+ili |>
+  select(week_end, all_of(age_cols)) |>
+  pivot_longer(-week_end, names_to = "age_group", values_to = "count") |>
+  ggplot(aes(week_end, count)) +
+  geom_line() +
+  facet_wrap(~ age_group, scales = "free_y", ncol = 2) +
+  labs(title = "Weekly ILI Counts by Age Group", x = "Week End", y = "Count")
+```
+###Correlation Checks
+
+```{r}
+# make it a plain tibble, keep only numeric columns
+ili_num <- ili |>
+  as_tibble() |>
+  select(where(is.numeric))
+
+# Simple correlation matrix (numeric vars only)
+ili_cor <- cor(ili_num, use= "pairwise.complete.obs")
+
+corrplot(ili_cor, method = "color", type = "lower",
+         tl.col = "black", tl.srt = 45)
+
+# Focus on correlation with target variable
+sort(ili_cor["percent_weighted_ili", ], decreasing = TRUE)
+```
+
+**Autocorrelation and Stationarity** 
+```{r}
+# Autocorrelation Function (ACF)
+ACF(ili, percent_weighted_ili) |> autoplot() +
+  labs(title = "Autocorrelation (ACF): % Weighted ILI")
+
+# Partial Autocorrelation Function (PACF)
+PACF(ili, percent_weighted_ili) |> autoplot() +
+  labs(title = "Partial Autocorrelation (PACF): % Weighted ILI")
+```
+
+###Heatmap (Epidemiological View)
+```{r}
+ili |>
+  mutate(year = year(week_end),
+         week = week(week_end)) |>
+  ggplot(aes(week, year, fill = percent_weighted_ili)) +
+  geom_tile() +
+  scale_fill_viridis_c() +
+  labs(title = "Heatmap of % Weighted ILI (Week vs Year)",
+       x = "MMWR Week", y = "Year", fill = "% ILI")
+```
+
+## Refrences
+
+OpenAI. (2025). ChatGPT (November 12 version) [LargeLanguage Model]
