@@ -83,7 +83,7 @@ sum(is.na(ili))
 colSums(is.na(ili))
 ```
 
-Only age_25_64 has missing values and all entries are missing. All other columns have no missing values. This variable can be excluded from the dataset.
+Only age_25_64 has missing values and all entries are missing. All other columns have no missing values. This variable can be excluded from the dataset. This variable may be harmless mathematically but dropping it will avoid potential confusions and error. 
 
 ```{r}
 # drop age_25_64 column form dataset 
@@ -145,6 +145,8 @@ ili |>
   autoplot()
 ```
 
+The time series of percent weighted ILI displays a clear seasonal pattern and fluctuating trend over time. Recurring peaks during winter months that reflect typical influenza seasonality. Around 2020, when the COVID-19 pandemic began a pronounced decline in influenza-like illness is observed. Following this period, influenza activity gradually increases indicating post-pandemic patterns. 
+
 ### Distribution and Outliers 
 
 ```{r}
@@ -159,10 +161,6 @@ ili |>
   geom_boxplot(outlier.alpha = 0.4, fill = "lightblue") +
   labs(title = "% Weighted ILI by Year", x = "Year", y = "% ILI")
 
-# Histogram 
-hist(ili$percent_weighted_ili,
-     main="Histogram of percent_weighted_ili")
-
 # Histogram of %ILI values
 ili |> 
   ggplot(aes(percent_weighted_ili)) +
@@ -170,6 +168,9 @@ ili |>
   labs(title = "Distribution of % Weighted ILI", x = "% ILI")
 
 ```
+
+Percent_weighted_ili is the target time series variable. Boxplots and histograms indicate a right skew in the % weighted Ili data, with a few outliers. This suggest that most weekly observations fall within relatively low ILI percentages, with a few outlying high values corresponding to peak flu seasons. Boxplots of ILI, partitioned by year show influenza activity that demonstrates annual fluctuations consistent with seasonal outbreaks. 
+
 ### Related Series and Context
 
 **Weighted vs Unweighted Comparison** 
@@ -183,6 +184,8 @@ ili |>
   labs(title = "Weighted vs Unweighted % ILI", x = "Week", y = "% ILI") 
 ```
 
+percent_unweighted_ili and percent_weighted_ili give very similar data because they are both measuring flu occurrences. Since percent_weight_ili is the sstandardized CDC metric it will be used as the target variable for analysis. 
+
 ```{r}
 # Reporting coverage over time
 ili |>
@@ -193,6 +196,8 @@ ili |>
   facet_wrap(~ measure, scales = "free_y", ncol = 1) +
   labs(title = "Reporting Context: Providers & Patients", x = "Week")
 ```
+
+The reporting context provides important background for interpreting ILI trends. Both the total number of providers participating in CDC’s ILI surveillance network and the total number of patients seen weekly show notable structural changes after 2020. Post 2020, the total number of providers reporting influenza like occurrences and the total number of patients has increased, Leveling off around 2023/2024. 
 
 ### Age Group Insight
 
@@ -207,6 +212,9 @@ ili |>
   facet_wrap(~ age_group, scales = "free_y", ncol = 2) +
   labs(title = "Weekly ILI Counts by Age Group", x = "Week End", y = "Count")
 ```
+
+Weekly counts of ILI by age group reveal a consistent seasonal pattern across all demographics. However, there is a noticeable increase in ILI patients for each age group around 2023/2024. This is consistent with the number of providers reporting and total patients increasing which is a broader resurgence in influenza activity and healthcare reporting, not an isolated demographic shift. 
+
 ###Correlation Checks
 
 ```{r}
@@ -225,6 +233,8 @@ corrplot(ili_cor, method = "color", type = "lower",
 sort(ili_cor["percent_weighted_ili", ], decreasing = TRUE)
 ```
 
+Correlation analysis shows that most variables are positively correlated with percent weighted ILI, indicating that increases in overall ILI activity tend to occur alongside increases in other related measures. The highest correlation is between percent weight ILI and percent unweighted ILI. These variables measure similar occurrences. Percent weight ILI is moderately correlated with age groups, providers, and the number of patients, suggesting that higher total ILI percentages coincide with higher case counts across all demographic groups. Percent weight ILI is weekly correlated with year and week, showing that temporal indexing does not drive ILI variation. Overall, parent-weighted ILI is proving to be a comprehensive indicator of influenza activity that closely aligns with both the unweighted percentage and raw age-specific case counts, while remaining influenced by broader reporting and population dynamics.  
+
 **Autocorrelation and Stationarity** 
 ```{r}
 # Autocorrelation Function (ACF)
@@ -236,17 +246,10 @@ PACF(ili, percent_weighted_ili) |> autoplot() +
   labs(title = "Partial Autocorrelation (PACF): % Weighted ILI")
 ```
 
-###Heatmap (Epidemiological View)
-```{r}
-ili |>
-  mutate(year = year(week_end),
-         week = week(week_end)) |>
-  ggplot(aes(week, year, fill = percent_weighted_ili)) +
-  geom_tile() +
-  scale_fill_viridis_c() +
-  labs(title = "Heatmap of % Weighted ILI (Week vs Year)",
-       x = "MMWR Week", y = "Year", fill = "% ILI")
-```
+ACF plot shows decaying correlation across many lags indicating non-stationary trend or present seasonality. PACF plot show significant spikes at short lags indicating short-term auto regressive dependence. Transformations will be helpful prior to analysis with ARIMA models. 
+
+# Transformations 
+
 
 ## Refrences
 
