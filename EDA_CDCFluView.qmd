@@ -250,7 +250,301 @@ ACF plot shows decaying correlation across many lags indicating non-stationary t
 
 # Transformations 
 
+## Stationarity  
+
+```{r}
+ili_weight <-ili |> 
+  select (week_end, percent_weighted_ili) |> 
+  filter(week_end >= as.Date("2015-01-03"),
+         week_end <= as.Date("2025-06-28")) |> 
+  as_tsibble(index = week_end)
+
+autoplot(ili_weight, percent_weighted_ili) + 
+  ggtitle('Percent Weighted ILI 2015-2025')
+
+```
+Is the series stationary 
+
+No, this series has seasonality and heteroskedasticit. There is also trend that increases post 2020. 
+
+Lag intervals are 7D  or 7 days. Each observation represents one week of data, not daily data. Lag = 1 means one week ago. 
+
+```{r}
+ili_weight |> gg_tsdisplay(percent_weighted_ili)
+```
+
+```{r}
+# Normalization 
+ili_weight |> 
+  mutate (log_v = log(percent_weighted_ili)) |> 
+  autoplot(log_v)
+```
+
+Constant variance, but trend and seasonality are present.
+
+```{r}
+#| echo: true
+#| warning: false
+#| fig.height: 3
+#| fig.cap: "Trend is removed, but seasonality exists."
+# non-seasonal differencing 
+ili_weight |> 
+  mutate(log_v =log(percent_weighted_ili),
+         d1 = difference(log_v, lag=1)) |> 
+  autoplot(d1)
+```
+```{r}
+#| echo: true
+#| warning: false
+#| fig.height: 3
+#| fig.cap: Seasonality is removed, but trend exists.
+# Seasonal Differencing
+ili_weight |> 
+  mutate(
+  log_v = log(percent_weighted_ili),
+   # use 52 for weekly seasonality 
+  D52 = difference(log_v, lag = 52)) |>
+  autoplot(D52)
+```
+
+```{r}
+#| echo: true
+#| warning: false
+# Combined differencing 
+ili_prepped <- ili_weight |> 
+  mutate(
+  log_v = log(percent_weighted_ili),
+   # use 52 for weekly seasonality 
+  D52 = difference(log_v, lag = 52),
+  d1 = difference(log_v, lag = 1),
+  D52d1 = difference(D52, lag =1)) 
+
+ili_prepped |> autoplot(D52d1)
+```
+
+Data looks like stationary. Do statistical test. 
+
+```{r}
+ili_prepped |> 
+  features(D52d1, unitroot_kpss) |> 
+  gt :: gt()
+```
+
+The p-value is larger than 0.05 therefore we fail to reject the null hypothesis. The differenced log-transformed series D52d1 is stationary. 
+
+```{r}
+# fragment 
+
+ili_prepped |> 
+  features(log_v, c(unitroot_kpss, unitroot_ndiffs, unitroot_nsdiffs)) |> 
+  gt:: gt()
+```
+
+Th eraw log-transformed series is non-stationary with a p-value less than 0.05. The model recommends one regular difference with ndiffs equal to one. However, no additional seasonal difference is needed with nsdiffs equal to zero.
+
+## Modeling 
+
+```{r}
+# Choose a weekly cutoff 
+cutoff <- max(ili$week_end) - weeks(52)
+
+ili_trn <- ili |> filter(week_end <= cutoff)
+ili_test <- ili |> filter(week_end > cutoff)
+
+# Fit baseline ARIMA models (raw vs log)
+ili_trn_arima <- ili_trn |> 
+  model(
+    arima_raw = ARIMA(percent_weighted_ili),
+    arima_log = ARIMA(log(percent_weighted_ili))
+  )
+
+ili_trn_arima |> 
+  select(arima_raw) |> 
+  gg_tsresiduals(type = "innovation")
+```
+
+Are the residuals white noise? 
+```{r}
+ili_trn_arima['arima_raw'] |> 
+  augment() |> 
+  autoplot(.innov)
+```
+
+```{r}
+# perform a ljung-box test with sufficient lags
+ili_trn_arima['arima_raw'] |> 
+  augment() |> 
+  features(.innov, c(ljung_box, box_pierce), lag=52) |> 
+  select(.model, contains('pvalue')) |> 
+  gt::gt()
+```
+The residuals from the current ARIMA model are not white noise. Autocorrelation remains int he residuals. The model is missing seasonal and autoregressive terms. This is indicated by the p-values that are extremely below 0.05. The null hypothesis is rejected. 
+
+```{r}
+# Repeat ljung-box test for arima_log
+ili_trn_arima['arima_log'] |> 
+  augment() |> 
+  features(.innov, c(ljung_box, box_pierce), lag=52) |> 
+  select(.model, contains('pvalue')) |> 
+  gt::gt()
+```
+
+On the log transformed data, p-values remain small, both under the 0.05 threshold. Therefore we reject the null hypothesis that the residuals are independent. Residuals are still autocorrleated after log transformations. Both models are under fitting that data and do not handle the annual (52-week) seasonality or short-term autocorrelation revealed in ACF.PACF plots. 
+
+## Modeling with Transformations 
+```{r}
+# Define training cutoff (exclude last year)
+trn_cutoff <- max(ili$week_end) - years(1)
+
+ili_trn_prep <- ili_prepped |>
+  filter(week_end <= trn_cutoff)
+
+# Fit multiple ARIMA and ETS models with transformations 
+ili_trn_fit <- ili_trn_prep |>
+  model(
+    arima_logv = ARIMA(log(percent_weighted_ili)),
+    arima_log1p = ARIMA(log1p(percent_weighted_ili)),
+    arima_sqrt = ARIMA(sqrt(percent_weighted_ili)),
+    arima_v = ARIMA(percent_weighted_ili),
+    ets_logv = ETS(log(percent_weighted_ili)),
+    ets_v = ETS(percent_weighted_ili)
+  )
+
+# Forecast 1 year (52 weeks) ahead 
+ili_fc_52 <- ili_trn_fit |> forecast(h = 52)
+
+ili_fc_52 |>
+  accuracy(ili) |>
+  arrange(RMSE) |> 
+  gt() |>
+  fmt_number(decimals = 2) |>
+  tab_header(
+    title= ("Model Accuracy Comparison"),
+    subtitle = ("Forecast performance over 52-week horizons")
+  )
+```
+
+In this analysis we forecast 1 year of data and compare to about 4 month data. One year forecast assess the model's ability to capture full seasonal cycles. In the final project or applied context, we may revert to 12–20 week forecasts if aim is Real-time influenza surveillance, or Comparison to CDC’s own short-term outlooks.
+
+The best overall accuracy for the 52-week horizon is arima_v with an RMSE of 2.14. Transformations did not help ARMIA modeling in this case. ETS lag is decent but not better than ARIMA. For 1-year forecast arima_v is the primary model.
+
+## Confifence Intervals/Transformations 
+```{r}
+#| fig-width: 22
+#| fig-height: 10
+ili_fc_52 |> 
+  autoplot(level = 95) +
+  facet_wrap(~ .model) +
+  autolayer(
+    ili |> filter(week_end > trn_cutoff),
+    percent_weighted_ili,
+    color = "black"
+  ) +
+  labs(
+    title = "Forecast vs Actual Influenza-Like Illness (ILI) Activity",
+    subtitle = "Weekly % Weighted ILI, 2024–2025 Forecast",
+  )  +
+  theme_minimal(base_size = 20)  # << increases all font sizes
+```
+
+The default (non-seasonal) ARIMA and ETS fits are producing unrealistic long-range trajectories because they haven’t yet been told how to handle your dataset’s strong yearly seasonality.
+
+### Handle the COVID-19 structural Break 
+
+The COVID-19 period (about 2020 to 2021) creates a level shift in the data. ARIMA assumes that the fluctuations come form the same process through time. When a massive one-time drop happens it assumes that it is part of the pattern yielding a forecast that does not reflect the data structure. Include a dummy regressor that singles the pandemic period. 
+
+Test whether the COVID-era structural break should be handled during preprocessing or later via a covariate.
+
+```{r}
+#| echo: true
+#| warning: false
+# Used Chat GPT to figure out how to create a pandemic period dummy variable 
+# and check the diagnostics of that variable 
+
+# Create a dummy variable for the pandemic period
+ili <- ili |> 
+  mutate(
+    pandemic = if_else(
+      week_end >= ymd("2020-03-01") & week_end <= ymd("2022-01-01"),
+      1, 0
+    )
+  )
+
+# Fit ARIMA with exogenous regressor
+ili_fit_covid <- ili |> 
+  model(
+    arima_covid = ARIMA(
+      log1p(percent_weighted_ili) ~ pandemic + PDQ(0,1,1,52)
+    )
+  )
+
+ili_fit_covid |> report() |>
+  knitr::kable(digits=0)
+```
+The seasonal ARIMA with a structural regressor, and the diagnostics confirm it’s a solid, well-behaved model.
+
+```{r}
+# This step renames some variables previously created
+
+# training split (hold out last 52 weeks)
+trn_cutoff <- max(ili$week_end) - weeks(52)
+ili_trn_prep <- ili |> filter(week_end <= trn_cutoff)
+ili_tst <- ili |> filter(week_end > trn_cutoff)   # observed holdout
+
+# Include pandemic in each ARIMA model
+ili_trn_fit <- ili_trn_prep |>
+  model(
+    arima_logv = ARIMA(log(percent_weighted_ili) ~ pandemic),
+    arima_log1p = ARIMA(log1p(percent_weighted_ili) ~ pandemic),
+    arima_sqrt = ARIMA(sqrt(percent_weighted_ili) ~ pandemic),
+    arima_v = ARIMA(percent_weighted_ili ~ pandemic),
+    arima_covid = ARIMA(log1p(percent_weighted_ili) ~ pandemic + PDQ(0,1,1,52)),
+    # Skip pandemic dummy for ETS models 
+    ets_logv = ETS(log(percent_weighted_ili)),
+    ets_v = ETS(percent_weighted_ili)
+  )
+
+# Use the held-out 52 weeks as new_data (ensure xreg present; it's 0 post-COVID)
+new_52 <- ili_tst |> mutate(pandemic = 0)
+
+# Forecast 
+ili_fc_52 <- forecast(ili_trn_fit, new_data = new_52)
+
+ili_fc_52 |>
+  accuracy(ili) |>
+  arrange(RMSE) |> 
+  gt() |>
+  fmt_number(decimals = 2) |>
+  tab_header(
+    title= ("Model Accuracy Comparison"),
+    subtitle = ("Forecast performance over 52-week horizon with COVID-19 period **adjusted** (ARIMA xreg)")
+  )
+```
+
+Adding the pandemic dummy to other ARIMA models helped, but the models still need explicit seasonal structure (D=1 and seasonal MA/AR at period 52). However the arima_covid model dramatically improved the RMSE results by roughly half the error of all other models. The signals of this model are much closer to white noise. 
+
+```{r}
+#| fig-width: 25
+#| fig-height: 15
+ili_fc_52 |> 
+  autoplot(level = 95) +
+  facet_wrap(~ .model) +
+  autolayer(
+    ili |> filter(week_end > trn_cutoff),
+    percent_weighted_ili,
+    color = "black"
+  ) +
+  labs(
+    title = "Forecast vs Actual Influenza-Like Illness (ILI) Activity",
+    subtitle = "Weekly % Weighted ILI, 2024–2025 Forecast",
+  )  +
+  theme_minimal(base_size = 20)  # << increases all font sizes
+```
+
+arima_covid (top-left) tracks the observed peak far better than the others — it’s the only one that visibly anticipates a realistic flu season peak around winter 2024–2025, then decays toward baseline.
+
 
 ## Refrences
 
 OpenAI. (2025). ChatGPT (November 12 version) [LargeLanguage Model]
+OpenAI. (2025). ChatGPT (November 14 version) [LargeLanguage Model]
