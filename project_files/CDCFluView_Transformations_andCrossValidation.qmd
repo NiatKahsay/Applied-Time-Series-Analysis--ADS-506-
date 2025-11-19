@@ -192,26 +192,27 @@ Seasonal spikes near 52	add seasonal MA or AR: (0,1,3)(0,1,1)[52] or (1,1,0)(0,1
 cutoff <- max(ili$week_end) - weeks(52)
 
 # Create Training and Validation sets 
-ili_trn <- ili_weight_transformed |> filter(week_end <= cutoff)
-ili_val <- ili_weight_transformed |> filter(week_end > cutoff)
+# Use original ili_weight data so fable can automatically back-transform metric data 
+ili_trn <- ili_weight |> filter(week_end <= cutoff)
+ili_val <- ili_weight |> filter(week_end > cutoff)
 
 # Fit models 
 ili_fit <- ili_trn |> 
   model(
     # Auto ARIMA model 
-    ARIMA_auto = ARIMA(percent_weighted_ili_bc ~ pandemic + season(period = 52)),
+    ARIMA_auto = ARIMA(box_cox(percent_weighted_ili, lambda_optimal) ~ pandemic + season(period = 52)),
     # Selected ARIMA Models form ACF/PACF plot 
-    ARIMA_013 = ARIMA(percent_weighted_ili_bc ~ pandemic + pdq(0, 1, 3)),
-    ARIMA_110 = ARIMA(percent_weighted_ili_bc ~ pandemic + pdq(1, 1, 0)),
-    ARIMA_013_011 = ARIMA(percent_weighted_ili_bc ~ pandemic + pdq(0, 1, 3) + PDQ(0, 1, 1)),
-    ARIMA_110_011 = ARIMA(percent_weighted_ili_bc ~ pandemic + pdq(1, 1, 0) + PDQ(0, 1, 1)),
+    ARIMA_013 = ARIMA(box_cox(percent_weighted_ili, lambda_optimal) ~ pandemic + pdq(0, 1, 3)),
+    ARIMA_110 = ARIMA(box_cox(percent_weighted_ili, lambda_optimal) ~ pandemic + pdq(1, 1, 0)),
+    ARIMA_013_011 = ARIMA(box_cox(percent_weighted_ili, lambda_optimal) ~ pandemic + pdq(0, 1, 3) + PDQ(0, 1, 1)),
+    ARIMA_110_011 = ARIMA(box_cox(percent_weighted_ili, lambda_optimal) ~ pandemic + pdq(1, 1, 0) + PDQ(0, 1, 1)),
     # ETS Model 
-    ETS_Model = ETS(percent_weighted_ili_bc),
+    ETS_Model = ETS(box_cox(percent_weighted_ili, lambda_optimal)),
     # TSLM Model with Regressor & Fourier Terms
-    TSLM_Model = TSLM(percent_weighted_ili_bc ~ pandemic + trend() + fourier(K = 20, period = 52)),
+    TSLM_Model = TSLM(box_cox(percent_weighted_ili, lambda_optimal) ~ pandemic + trend() + fourier(K = 20, period = 52)),
     # Seasonal Naive 
-    SNAIVE_Model = SNAIVE(percent_weighted_ili_bc),
-    SNAIVE_Equivalent = ARIMA(percent_weighted_ili_bc ~ 0 + pdq(0, 0, 0) + PDQ(0, 1, 0))
+    SNAIVE_Model = SNAIVE(box_cox(percent_weighted_ili, lambda_optimal)),
+    SNAIVE_Equivalent = ARIMA(box_cox(percent_weighted_ili, lambda_optimal) ~ 0 + pdq(0, 0, 0) + PDQ(0, 1, 0))
     )
 
 # View Auto ARIMA choice 
@@ -246,20 +247,137 @@ ili_fit_candidates <- ili_fit |>
 
 ```{r}
 # Full 52-Week Forecast for Evaluation
-forecast_52wks <- ili_fit_candidates |>
+forecast_52wks <- 
+  ili_fit_candidates |>
   forecast(new_data = ili_val)
 
+# 52 weeks RMSE
+acc_52wk <- forecast_52wks |>
+  accuracy(ili_val) |>
+  arrange(RMSE) |> 
+  select(.model, ME, RMSE, MAE, MAPE) |> 
+  gt() |>
+  fmt_number(decimals = 2) |> 
+  tab_header(
+    title= ("Model Accuracy Comparison"),
+    subtitle = ("Forecast performance over 52-week horizon with COVID-19 period **adjusted** (ARIMA and TSLM)"))
+  
+  acc_52wk
+  
+```
+
+The best performing model on the forecast dataset was the TSLM_model with the lowest RMSE of 0.83. The TSLM model generalizes best across the full 52-week horizon. The ARIMA performs adequately but struggles more than TSLM. The added pandemic dummy helps, but not enough to outperform the more flexible TSLM. Seasonal naïve collapses under post-COVID seasonality changes.
+
+```{r}
+# Plotting the winning model (TSLM_Model)
+forecast_52wks |>
+  filter(.model == "TSLM_Model") |>
+  autoplot(ili_weight, level= NULL) + 
+  labs(
+    title = "52-Week Forecast Using TSLM Model (Back-Transformed)",
+    subtitle = "Percent Weight ILI (Region 9)"
+  )
+```
+
+```{r}
+#| fig-width: 25
+#| fig-height: 8
+
+forecast_52wks |>
+  autoplot(ili_weight, level = 95) +
+  facet_wrap(~ .model, scales = "free_y") + 
+  labs(
+    title = "52-Week Forecast vs Actual Influenza-Like Illness (ILI)",
+    subtitle = "All models back-transformed to original % Weighted ILI scale",
+  ) +
+  theme_minimal(base_size = 18) +
+  theme(
+    strip.text = element_text(face = "bold", size = 20),
+    plot.title = element_text(face = "bold", size = 24)
+  )
+
+```
+Note: Each model has it's own y-axis.
+
+The long-range TSLM forecast exceeds past observed values, which is expected given upward post-COVID shifts in seasonal influenza activity and the model’s inclusion of trend and autoregressive structure. This behavior is consistent with CDC FluView regional patterns, where peak ILI levels have increased compared to pre-pandemic years.
+
+```{r}
 # 12-Week Forecast (First 12 weeks of the validation set)
 ili_12wks <- ili_val |> slice(1:12)
 forecast_12wks <- ili_fit_candidates |>
   forecast(new_data = ili_12wks)
 
 # Check RMSE 
-
+acc_12wk <- forecast_12wks |>
+  accuracy(ili_12wks) |>
+  arrange(RMSE) |> 
+  select(.model, ME, RMSE, MAE, MAPE) |> 
+  gt() |>
+  fmt_number(decimals = 2) |> 
+  tab_header(
+    title= ("Model Accuracy Comparison (12-Week Horizon)"),
+    subtitle = ("Forecast performance over the first 12 weeks of the validation period"))
   
+acc_12wk
+```
+ 
+The 12-week horizon shows a shift compared to the 52 week horizon. In the 12-week forecast Auto ARIMA was the best performing model. ARIMA_auto provides the most accurate short-term (3-month) forecasts.
+This is typical because ARIMA excels at capturing local autocorrelation patterns, which dominate over short horizons. TSLM performed well but Auto ARIMA outperformed for short horizons. Seasonal naïve remains weak because post-COVID influenza seasonality is unstable and no longer repeats reliably.
+ 
+```{r}
+# Plotting the winning model (ARIMA_Auto)
+forecast_12wks |>
+  filter(.model == "ARIMA_auto") |>
+  autoplot(ili_weight, level= NULL) + 
+  labs(
+    title = "12-Week Forecast Using ARIMA Model (Back-Transformed)",
+    subtitle = "Percent Weight ILI (Region 9)"
+  )
 ```
 
- 
+```{r}
+#| fig-width: 25
+#| fig-height: 8
+
+forecast_12wks |>
+  autoplot(ili_weight, level = 95) +
+  facet_wrap(~ .model, scales = "free_y") + 
+  autolayer(
+    ili_weight |> filter(week_end %in% ili_12wks$week_end),
+    percent_weighted_ili,
+    color = "black",
+    linewidth = 0.8,
+    alpha = 0.7
+  ) +
+  labs(
+    title = "12-Week Forecast vs Actual Influenza-Like Illness (ILI)",
+    subtitle = "Short-term comparison across all models",
+    x = "Week",
+    y = "% Weighted ILI"
+  ) +
+  theme_minimal(base_size = 18)
+
+
+```
+Note: Each model has it's own y-axis. 
+
+Just like the 52-week results for the TSLM model, the ARIMA_auto model's 12-week or 52-week forecast extended well above the highest observed %ILI in the training period. This behavior is expected and appropriate because ARIMA captures short-term momentum, Post-COVID seasons have higher peaks, and long-horizon uncertainty naturally widens forecast.
 
 ## Cross Validation 
+
+The 12-week horizon reflects short-term public health forecasting (what CDC FluView typically uses). The 52-week horizon reflects long-term model stability and seasonality.
+
+Both horizons showed different winners:
+
+Short-term → ARIMA_auto
+
+Long-term → TSLM
+
+CV will allow for systematic evaluation.
+
+- Is ARIMA always better for short horizons?
+- Is TSLM consistently better for long horizons?
+- How stable is each model across different years?
+- Does the COVID-19 dummy improve predictive consistency?
+
 
