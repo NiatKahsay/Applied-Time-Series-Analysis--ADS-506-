@@ -336,8 +336,8 @@ cutoff <- max(ili$week_end) - weeks(52)
 ili_trn <- ili_weight |> filter(week_end <= cutoff)
 ili_val <- ili_weight |> filter(week_end > cutoff)
 
-# Fit models 
-ili_fit <- ili_trn |> 
+# Create a modeling function
+model_ili <- function(data) { data |> 
   model(
     # Auto ARIMA model 
     ARIMA_auto = ARIMA(box_cox(percent_weighted_ili, lambda_optimal) ~ pandemic + season(period = 52)),
@@ -353,7 +353,10 @@ ili_fit <- ili_trn |>
     # Seasonal Naive 
     SNAIVE_Model = SNAIVE(box_cox(percent_weighted_ili, lambda_optimal)),
     SNAIVE_Equivalent = ARIMA(box_cox(percent_weighted_ili, lambda_optimal) ~ 0 + pdq(0, 0, 0) + PDQ(0, 1, 0))
-    )
+    ) }
+
+# Fit models 
+ili_fit <- ili_trn |> model_ili()
 
 # View Auto ARIMA choice 
 ili_fit['ARIMA_auto'] |> report() 
@@ -377,10 +380,30 @@ ili_fit |>
 According to AICc, TSLM is the best performing model with the lowest AICc value. The best performing ARIMA model is the Auto ARIMA but it is performing slightly worse than TSLM. ETS model has a poor fit to this data, likely due to it's ignorance of the pandemic regressor. The SNAIVE failed to fit correctly so an SNAIVE equivalent model was added for analysis. This model has a large positive AICc and confirms the need for a more complex model like TSLM.  
 
 ```{r}
-# Create a model object that contains the best candidates for forecasting
-# and Baseline model 
-ili_fit_candidates <- ili_fit |> 
-  select(TSLM_Model, ARIMA_auto, SNAIVE_Equivalent)
+# Create a model function that contains the best candidates for forecasting and Baseline model
+ili_fit_candidates_fn <- function(data) {
+  data |>
+    model(
+      # TSLM candidate
+      TSLM_Model = TSLM(box_cox(percent_weighted_ili, 
+                                lambda_optimal) ~ pandemic 
+                        + trend() + fourier(K = 20, period 
+                                            = 52)),
+      # Auto ARIMA candidate
+      ARIMA_auto = ARIMA(
+        box_cox(percent_weighted_ili, lambda_optimal) ~ 
+          pandemic + season(period = 52)
+      ),
+      # SNAIVE-equivalent ARIMA
+      SNAIVE_Equivalent = ARIMA(
+        box_cox(percent_weighted_ili, lambda_optimal) ~ 
+          0 + pdq(0, 0, 0) + PDQ(0, 1, 0)
+      )
+    )
+}
+
+ili_fit_candidates <- ili_fit_candidates_fn(ili_trn)
+
 ```
 
 ## Forcast the Validation period 
@@ -518,6 +541,133 @@ CV will allow for systematic evaluation.
 - Is ARIMA always better for short horizons?
 - Is TSLM consistently better for long horizons?
 - How stable is each model across different years?
+
 - Does the COVID-19 dummy improve predictive consistency?
 
+*CV was not running with COVID-19 dummy variable. Check if the same patterns exisit without the pandemic signal. Is the model ranking 
 
+#### Define a CV version of models without pandemic dummy variable
+```{r}
+ili_fit_candidates_cv <- function(data) {
+  data |>
+    model(
+      TSLM_Model = TSLM(
+        box_cox(percent_weighted_ili, lambda_optimal) ~ 
+          trend() + fourier(K = 20, period = 52)
+      ),
+      ARIMA_auto = ARIMA(
+        box_cox(percent_weighted_ili, lambda_optimal) ~ 
+          season(period = 52)
+      ),
+      SNAIVE_Equivalent = ARIMA(
+        box_cox(percent_weighted_ili, lambda_optimal) ~ 
+          0 + pdq(0, 0, 0) + PDQ(0, 1, 0)
+      )
+    )
+}
+```
+
+
+create a tsibble with cross-validation series that starts with 5 years of data and adds one year at time through 2025. (Hint: use stretch_tsibble)
+
+
+
+#### Short-Term Horizon: 12 weeks 
+```{r}
+# CV series: 5-year initial window, step = 1 year (52 weeks)
+ili_cv <- ili_trn |>
+  stretch_tsibble(.init = 52 * 5, .step = 52)
+
+# Fit candidate models + combo for each CV window
+ili_cv_fit_12 <- ili_cv |>
+  ili_fit_candidates_cv() |>
+  mutate(
+    combo = (TSLM_Model + ARIMA_auto + SNAIVE_Equivalent) / 3
+  )
+
+# Forecast 12 weeks ahead for each rolling window
+ili_cv_fc_12 <- ili_cv_fit_12 |>
+  forecast(h = "12 weeks")
+
+# Accuracy: average across all validation periods per model
+cv_metrics_12 <- ili_cv_fc_12 |>
+  accuracy(ili_trn, by = c(".model", ".id")) |>
+  group_by(.model) |>
+  summarise(
+    RMSE = mean(RMSE, na.rm = TRUE),
+    MAE  = mean(MAE,  na.rm = TRUE),
+    MAPE = mean(MAPE, na.rm = TRUE),
+    .groups = "drop"
+  ) |>
+  arrange(RMSE) |>
+  gt() |>
+  fmt_number(columns = c(RMSE, MAE, MAPE), decimals = 1) |>
+  tab_header(
+    title = "Cross-Validation Forecast Accuracy (5-Year Rolling Origin, 12-Week Horizon)",
+    subtitle = "ILI Net, Training up to 2025"
+  )
+
+gt_cv_metrics_12
+
+```
+The ARIMA_auto mode is the best choice having the lowest RMSE and MAE values. ARIMA_auto remains the top choice for Short-Term Modeling. 
+
+#### Long-Term Horizon: 52 weeks 
+```{r}
+#| warning: false
+# Fit the data 
+ili_cv_fit_52 <- ili_cv |>
+  ili_fit_candidates_cv() |>
+  mutate(
+    combo = (TSLM_Model + ARIMA_auto + SNAIVE_Equivalent) / 3
+  )
+
+# Forecast 52 weeks 
+ili_cv_fc_52 <- ili_cv_fit_52 |>
+  forecast(h = "52 weeks")
+
+# Compute accuracy 
+cv_metrics_52 <- ili_cv_fc_52 |>
+  accuracy(ili_trn, by = c(".model", ".id")) |>
+  group_by(.model) |>
+  summarise(
+    RMSE = mean(RMSE, na.rm = TRUE),
+    MAE  = mean(MAE,  na.rm = TRUE),
+    MAPE = mean(MAPE, na.rm = TRUE),
+    .groups = "drop"
+  ) |>
+  arrange(RMSE) 
+
+# Build the gt table
+gt_cv_metrics_52 <- cv_metrics_52 |>
+  gt() |>
+  fmt_number(columns = c(RMSE, MAE, MAPE), decimals = 1) |>
+  tab_header(
+    title = "Cross-Validation Forecast Accuracy (5-Year Rolling Origin, 52-Week Horizon)",
+    subtitle = "ILI Net, Training up to 2025"
+  )
+
+gt_cv_metrics_52
+
+
+```
+
+The ARIMA_auto model is the best performer when the pandemic regressor is removed for Cross Validation modeling. TSLM was picked as the top performing model prior to cross validation. Long-horizon forecasting is strongly affected by the pandemic disruption. TSLM performed well previously due to the structural indicator explain the pandemic period. When the regressor is removed TSLM looses this information and becomes less stable. However, ARIMA can approximately absorb structural breaks via differencing.
+
+# Conclusion
+
+For the main 52-week forecast evaluation a COVID-19 dummy (pandemic) was included as a regressor, which improved model behavior around 2020–2021. THis allowed for the TSLM model to better capture long-term trend and seasonal patterns. 
+
+However, for rolling-origin cross-validation simplified models without the pandemic dummy were used. Providing future values for exogenous regressors in every CV fold is non-trivial in fable, and removing the dummy allowed for a clean and consistent comparison of short- versus long-horizon performance across multiple years. The core behavioral patterns of the models remained intact.
+
+Short-term forecast were consistently stable across folds. The ARIMA model achieved the lowest error both with and without the pandemic variable. Indicating that the ARIMA model is structurally well-suited for short-horizon ILI forecasting. 
+
+The long-term model was less stable. In the hold-out evaluation with the pandemic variable the TSLM model produced the strongest long-term horizon performance. However, in cross-validation without the dummy variable, TSLM loss the structural advantage and the ARIMA model outperformed it. This divergence reflects how sensitive long-horizon forecasts are to structural breaks and the regressors used to model them.
+
+Overall, the results highlight two robust themes:
+
+- Short-term forecasting is consistently more reliable, with ARIMA providing the strongest and most stable performance.
+
+- Long-term forecasting is inherently unstable, and TSLM performs best when structural information (such as the pandemic dummy) is included.
+
+The patterns in this analysis reinforce the importance of horizon-specific model selection and show how exogenous variable can meaningfully affect long-range predictions. 
