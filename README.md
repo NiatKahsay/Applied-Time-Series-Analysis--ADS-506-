@@ -8,7 +8,7 @@ The analysis was completed as part of a graduate-level Data Science project.
 
 ---
 
-## 📘 Project Summary
+## Project Summary
 
 We analyzed weekly CDC influenza-like illness (ILI) data and built forecasting models under multiple horizons:
 
@@ -26,7 +26,7 @@ To ensure robustness, we performed both **automated fable cross-validation** and
 
 ---
 
-## ⭐ Key Findings
+## Key Findings
 
 - **ARIMA performs best for very short-term forecasts (~12 weeks)**  
   Initial validation showed ARIMA had ~3% lower RMSE, making it ideal for near-term operational planning.
