@@ -270,7 +270,8 @@ ACF plot shows decaying correlation across many lags indicating non-stationary t
 ```{r}
 # Check stationarity (fabletools:: feature(...))
 ili_weight |> 
-  features(percent_weighted_ili, c(unitroot_kpss, unitroot_ndiffs, unitroot_nsdiffs)) |> 
+  features(percent_weighted_ili, c(unitroot_kpss, 
+                                   unitroot_ndiffs, unitroot_nsdiffs)) |> 
   gt::gt()
 ```
 
@@ -305,7 +306,8 @@ Since λ is close to -0.5 (reciprocal square root), the best approach is to use 
 ili_weight_transformed <- ili_weight |> 
   mutate(
     # Apply Box-Cox transformaiton to the percent_weight_ili column 
-    percent_weighted_ili_bc = box_cox(percent_weighted_ili, lambda = lambda_optimal)
+    percent_weighted_ili_bc = box_cox(percent_weighted_ili, 
+                                      lambda = lambda_optimal)
   )
 
 # VIew ACF and PACF plots 
@@ -332,7 +334,8 @@ Seasonal spikes near 52	add seasonal MA or AR: (0,1,3)(0,1,1)[52] or (1,1,0)(0,1
 cutoff <- max(ili$week_end) - weeks(52)
 
 # Create Training and Validation sets 
-# Use original ili_weight data so fable can automatically back-transform metric data 
+# Use original ili_weight data so fable 
+# can automatically back-transform metric data 
 ili_trn <- ili_weight |> filter(week_end <= cutoff)
 ili_val <- ili_weight |> filter(week_end > cutoff)
 
@@ -340,19 +343,31 @@ ili_val <- ili_weight |> filter(week_end > cutoff)
 model_ili <- function(data) { data |> 
   model(
     # Auto ARIMA model 
-    ARIMA_auto = ARIMA(box_cox(percent_weighted_ili, lambda_optimal) ~ pandemic + season(period = 52)),
+    ARIMA_auto = ARIMA(box_cox(percent_weighted_ili, 
+                               lambda_optimal) ~ pandemic + 
+                         season(period = 52)),
     # Selected ARIMA Models form ACF/PACF plot 
-    ARIMA_013 = ARIMA(box_cox(percent_weighted_ili, lambda_optimal) ~ pandemic + pdq(0, 1, 3)),
-    ARIMA_110 = ARIMA(box_cox(percent_weighted_ili, lambda_optimal) ~ pandemic + pdq(1, 1, 0)),
-    ARIMA_013_011 = ARIMA(box_cox(percent_weighted_ili, lambda_optimal) ~ pandemic + pdq(0, 1, 3) + PDQ(0, 1, 1)),
-    ARIMA_110_011 = ARIMA(box_cox(percent_weighted_ili, lambda_optimal) ~ pandemic + pdq(1, 1, 0) + PDQ(0, 1, 1)),
+    ARIMA_013 = ARIMA(box_cox(percent_weighted_ili, 
+                              lambda_optimal) ~ pandemic + pdq(0, 1, 3)),
+    ARIMA_110 = ARIMA(box_cox(percent_weighted_ili, 
+                              lambda_optimal) ~ pandemic + pdq(1, 1, 0)),
+    ARIMA_013_011 = ARIMA(box_cox(percent_weighted_ili, 
+                                  lambda_optimal) ~ pandemic + 
+                            pdq(0, 1, 3) + PDQ(0, 1, 1)),
+    ARIMA_110_011 = ARIMA(box_cox(percent_weighted_ili, 
+                                  lambda_optimal) ~ pandemic + 
+                            pdq(1, 1, 0) + PDQ(0, 1, 1)),
     # ETS Model 
     ETS_Model = ETS(box_cox(percent_weighted_ili, lambda_optimal)),
     # TSLM Model with Regressor & Fourier Terms
-    TSLM_Model = TSLM(box_cox(percent_weighted_ili, lambda_optimal) ~ pandemic + trend() + fourier(K = 20, period = 52)),
+    TSLM_Model = TSLM(box_cox(percent_weighted_ili, 
+                              lambda_optimal) ~ pandemic + 
+                        trend() + fourier(K = 20, period = 52)),
     # Seasonal Naive 
     SNAIVE_Model = SNAIVE(box_cox(percent_weighted_ili, lambda_optimal)),
-    SNAIVE_Equivalent = ARIMA(box_cox(percent_weighted_ili, lambda_optimal) ~ 0 + pdq(0, 0, 0) + PDQ(0, 1, 0))
+    SNAIVE_Equivalent = ARIMA(box_cox(percent_weighted_ili, 
+                                      lambda_optimal) ~ 0 + 
+                                pdq(0, 0, 0) + PDQ(0, 1, 0))
     ) }
 
 # Fit models 
@@ -380,7 +395,8 @@ ili_fit |>
 According to AICc, TSLM is the best performing model with the lowest AICc value. The best performing ARIMA model is the Auto ARIMA but it is performing slightly worse than TSLM. ETS model has a poor fit to this data, likely due to it's ignorance of the pandemic regressor. The SNAIVE failed to fit correctly so an SNAIVE equivalent model was added for analysis. This model has a large positive AICc and confirms the need for a more complex model like TSLM.  
 
 ```{r}
-# Create a model function that contains the best candidates for forecasting and Baseline model
+# Create a model function that contains the 
+# best candidates for forecasting and Baseline model
 ili_fit_candidates_fn <- function(data) {
   data |>
     model(
@@ -423,7 +439,9 @@ acc_52wk <- forecast_52wks |>
   fmt_number(decimals = 2) |> 
   tab_header(
     title= ("Model Accuracy Comparison"),
-    subtitle = ("Forecast performance over 52-week horizon with COVID-19 period **adjusted** (ARIMA and TSLM)"))
+    subtitle = ("Forecast performance over 
+                52-week horizon with COVID-19 period **adjusted** 
+                (ARIMA and TSLM)"))
   
   acc_52wk
   
@@ -479,7 +497,8 @@ acc_12wk <- forecast_12wks |>
   fmt_number(decimals = 2) |> 
   tab_header(
     title= ("Model Accuracy Comparison (12-Week Horizon)"),
-    subtitle = ("Forecast performance over the first 12 weeks of the validation period"))
+    subtitle = ("Forecast performance over the first 
+                12 weeks of the validation period"))
   
 acc_12wk
 ```
@@ -603,11 +622,12 @@ cv_metrics_12 <- ili_cv_fc_12 |>
   gt() |>
   fmt_number(columns = c(RMSE, MAE, MAPE), decimals = 1) |>
   tab_header(
-    title = "Cross-Validation Forecast Accuracy (5-Year Rolling Origin, 12-Week Horizon)",
+    title = "Cross-Validation Forecast Accuracy 
+    (5-Year Rolling Origin, 12-Week Horizon)",
     subtitle = "ILI Net, Training up to 2025"
   )
 
-gt_cv_metrics_12
+cv_metrics_12
 
 ```
 The ARIMA_auto mode is the best choice having the lowest RMSE and MAE values. ARIMA_auto remains the top choice for Short-Term Modeling. 
@@ -643,7 +663,8 @@ gt_cv_metrics_52 <- cv_metrics_52 |>
   gt() |>
   fmt_number(columns = c(RMSE, MAE, MAPE), decimals = 1) |>
   tab_header(
-    title = "Cross-Validation Forecast Accuracy (5-Year Rolling Origin, 52-Week Horizon)",
+    title = "Cross-Validation Forecast Accuracy 
+    (5-Year Rolling Origin, 52-Week Horizon)",
     subtitle = "ILI Net, Training up to 2025"
   )
 
