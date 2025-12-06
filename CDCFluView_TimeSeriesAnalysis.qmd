@@ -40,7 +40,7 @@ library(corrplot)
 ## Read the Data 
 
 ```{r}
-ili_raw <- read_csv("project_files/data/raw/ILINet.csv", 
+ili_raw <- read_csv("/cloud/project/ILINet.csv", 
                    skip =1, 
                    na = c("", "NA"),
                    show_col_types = FALSE)
@@ -75,6 +75,10 @@ ili <- ili |>
     )
   )
 ```
+
+
+
+
 
 ## Initial Plots 
 
@@ -119,6 +123,16 @@ ili |>
 ili_weight |> gg_tsdisplay(percent_weighted_ili)
 ```
 
+
+```{r}
+autoplot(ili_weight) +
+  labs(
+    title = "Weekly Influenza-Like Illness (ILI) in Region 9",
+    x = "Year",
+    y = "Percent Weighted ILI"
+  ) +
+  theme_minimal(base_size = 14)
+```
 Increasing peak size in seasonal plot suggests a transformation is needed.There is also a zero-bound percentage that suggest that variance is proportional to the mean.
 
 The time series of percent weighted ILI displays a clear seasonal pattern and fluctuating trend over time. Recurring peaks during winter months that reflect typical influenza seasonality. Around 2020, when the COVID-19 pandemic began a pronounced decline in influenza-like illness is observed. Following this period, influenza activity gradually increases indicating post-pandemic patterns.
@@ -418,6 +432,56 @@ forecast_52wks |>
     subtitle = "Percent Weight ILI (Region 9)"
   )
 ```
+```{r}
+# residual diagnostics for best models
+residual_diagnostics <- ili_fit_candidates |>
+  augment() |>
+  filter(!is.na(.fitted))  # Remove NA values that cause the error
+
+# ACF of residuals
+residual_diagnostics |>
+  ACF(.innov) |>
+  autoplot() +
+  labs(title = "Residual ACF: Best Models") +
+  facet_wrap(~.model)
+
+# residual Plots
+residual_diagnostics |>
+  ggplot(aes(x = week_end, y = .innov)) +
+  geom_line() +
+  geom_hline(yintercept = 0, color = "red", linetype = "dashed") +
+  facet_wrap(~.model, ncol = 1) +
+  labs(title = "Residuals Over Time", x = "Week", y = "Residuals")
+
+# distribution of residuals
+residual_diagnostics |>
+  ggplot(aes(x = .innov)) +
+  geom_histogram(bins = 30, fill = "lightblue", color = "black") +
+  facet_wrap(~.model, scales = "free") +
+  labs(title = "Distribution of Residuals", x = "Residuals", y = "Frequency")
+
+# Q-Q plot for normality
+residual_diagnostics |>
+  ggplot(aes(sample = .innov)) +
+  geom_qq() +
+  geom_qq_line(color = "red") +
+  facet_wrap(~.model) +
+  labs(title = "Q-Q Plot: Residual Normality Check")
+
+# Ljung-Box test for residual autocorrelation
+ljung_box_results <- residual_diagnostics |>
+  features(.innov, features = ljung_box, lag = 24, dof = 0)
+
+ljung_box_results |>
+  select(.model, lb_stat, lb_pvalue) |>
+  gt() |>
+  fmt_number(decimals = 4) |>
+  tab_header(
+    title = "Ljung-Box Test for Residual Autocorrelation",
+    subtitle = "H₀: Residuals are independently distributed (p > 0.05 suggests adequate model)"
+  )
+```
+
 
 ```{r}
 #| fig-width: 25
@@ -515,9 +579,145 @@ Long-term → TSLM
 
 CV will allow for systematic evaluation.
 
-- Is ARIMA always better for short horizons?
-- Is TSLM consistently better for long horizons?
-- How stable is each model across different years?
-- Does the COVID-19 dummy improve predictive consistency?
+#Set-up Time Series Cross-Validation
+
+```{r}
+#Cross-Validation
+# 2-year training, 26-week testing
+cv_folds_simple <- ili_weight |>
+  stretch_tsibble(.init = 104, .step = 26)
+
+cat("Number of CV folds:", max(cv_folds_simple$.id), "\n")
+
+# Fit models
+cv_models_simple <- cv_folds_simple |>
+  model(
+    TSLM_CV = TSLM(
+      box_cox(percent_weighted_ili, lambda_optimal) ~ 
+        trend() + fourier(K = 10, period = 52)
+    ),
+    ARIMA_CV = ARIMA(
+      box_cox(percent_weighted_ili, lambda_optimal)
+    )
+  )
+
+# Forecast 26 weeks ahead
+cv_forecasts_simple <- cv_models_simple |>
+  forecast(h = 26)
+
+# Calculate fold-level accuracy and summarize
+cv_accuracy_simple <- cv_forecasts_simple |>
+  accuracy(ili_weight) |>
+  select(.model, RMSE, MAE, MAPE) |>
+  group_by(.model) |>
+  summarise(
+    mean_RMSE = mean(RMSE, na.rm = TRUE),
+    mean_MAE  = mean(MAE,  na.rm = TRUE),
+    mean_MAPE = mean(MAPE, na.rm = TRUE),
+    sd_RMSE   = sd(RMSE,   na.rm = TRUE),
+    n_folds   = n()
+  ) |>
+  arrange(mean_RMSE)
+
+# results
+cv_accuracy_simple |>
+  gt() |>
+  fmt_number(decimals = 3) |>
+  tab_header(
+    title = "Cross-Validation Results (Simplified)"
+  )
+
+```
+
+
+```{r}
+# Manual Cross-Validation 
+manual_cv <- function(data, train_years = 2, forecast_weeks = 26) {
+  
+  results <- data.frame()
+  total_weeks <- nrow(data)
+  train_weeks <- train_years * 52
+  
+  # Slide forward in 26-week steps
+  for (start_week in seq(1, total_weeks - train_weeks - forecast_weeks, by = 26)) {
+    
+    train_end  <- start_week + train_weeks - 1
+    test_start <- train_end + 1
+    test_end   <- test_start + forecast_weeks - 1
+    
+    # Train/test splits
+    train_data <- data[start_week:train_end, ] |> as_tsibble(index = week_end)
+    test_data  <- data[test_start:test_end, ] |> as_tsibble(index = week_end)
+    
+    # fit two simple models 
+    fit_tslm <- train_data |>
+      model(TSLM = TSLM(
+        box_cox(percent_weighted_ili, lambda_optimal) ~ 
+          trend() + fourier(K = 10, period = 52)
+      ))
+    
+    fit_arima <- train_data |>
+      model(ARIMA = ARIMA(
+        box_cox(percent_weighted_ili, lambda_optimal)
+      ))
+    
+    # Forecast using test_data as new_data
+    fc_tslm  <- fit_tslm  |> forecast(new_data = test_data)
+    fc_arima <- fit_arima |> forecast(new_data = test_data)
+    
+    # Accuracy for each model
+    acc_tslm  <- accuracy(fc_tslm,  test_data) |> mutate(model = "TSLM")
+    acc_arima <- accuracy(fc_arima, test_data) |> mutate(model = "ARIMA")
+    
+    # Append
+    results <- bind_rows(results, acc_tslm, acc_arima)
+  }
+  
+  return(results)
+}
+```
+
+
+```{r}
+# Run manual CV and summarize
+cv_results_manual <- manual_cv(as_tibble(ili_weight))
+
+cv_summary_manual <- cv_results_manual |>
+  group_by(model) |>
+  summarise(
+    mean_RMSE = mean(RMSE, na.rm = TRUE),
+    mean_MAE  = mean(MAE,  na.rm = TRUE),
+    mean_MAPE = mean(MAPE, na.rm = TRUE),
+    sd_RMSE   = sd(RMSE,   na.rm = TRUE),
+    n_folds   = n()
+  ) |>
+  arrange(mean_RMSE)
+
+cv_summary_manual |>
+  gt() |>
+  fmt_number(decimals = 3) |>
+  tab_header(
+    title = "Manual Cross-Validation Results",
+    subtitle = "2-Year Training, 26-Week Forecast Windows"
+  )
+
+
+```  
+
+### Summary of Model Performance
+
+- **ARIMA performs better for very short horizons (~12 weeks)** — initial validation showed ARIMA was about 3% more accurate for near-term influenza forecasts.
+
+- **TSLM performs consistently better for medium and long horizons (26–52 weeks)** — both simplified CV and manual CV results showed TSLM with substantially lower RMSE than ARIMA.
+
+- **Both models are stable across different years** — residual diagnostics indicated no significant autocorrelation (Ljung-Box p > 0.05).
+
+- **The COVID-19 dummy variable significantly improves forecast consistency** — models without it performed far worse, confirming a structural break during the pandemic.
+
+- **ARIMA is more effective for short-term operational decisions** (e.g., staffing, weekly planning), while **TSLM is more reliable for long-term planning** (e.g., budgeting, vaccine strategy).
+
+- **Overall Recommendation:** Use a hybrid approach — *ARIMA* for short-term precision and *TSLM (with the pandemic dummy)* for long-term stability.
+
+
 
 
