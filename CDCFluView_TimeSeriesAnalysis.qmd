@@ -40,7 +40,7 @@ library(corrplot)
 ## Read the Data 
 
 ```{r}
-ili_raw <- read_csv("/cloud/project/ILINet.csv", 
+ili_raw <- read_csv("project_files/data/raw/ILINet.csv", 
                    skip =1, 
                    na = c("", "NA"),
                    show_col_types = FALSE)
@@ -159,7 +159,7 @@ Only age_25_64 had missing values and all entries are missing. All other columns
 
 ```{r}
 # View Summary 
-summary(ili)
+summary(ili) 
 ```
 
 There are 781 observations, which is about 15 years of data from 2010 to 2025. The frequency of the data is weekly. Both short-term fluctuations and long-term seasonality can be analysed. 
@@ -284,7 +284,8 @@ ACF plot shows decaying correlation across many lags indicating non-stationary t
 ```{r}
 # Check stationarity (fabletools:: feature(...))
 ili_weight |> 
-  features(percent_weighted_ili, c(unitroot_kpss, unitroot_ndiffs, unitroot_nsdiffs)) |> 
+  features(percent_weighted_ili, c(unitroot_kpss, unitroot_ndiffs, 
+                                   unitroot_nsdiffs)) |> 
   gt::gt()
 ```
 
@@ -294,7 +295,9 @@ The test confirms non-stationarity. Suggestions:
 
     Apply a non-seasonal difference (lag 1): d=1.
 
-    Incorporate the pandemic dummy into your ARIMA model to account for the deterministic level shift that the differencing might not perfectly address.
+    Incorporate the pandemic dummy into your ARIMA model to 
+    account for the deterministic level shift that the differencing might 
+    not perfectly address.
     
 ### Variance (heteroscedasticity)
 
@@ -319,7 +322,8 @@ Since λ is close to -0.5 (reciprocal square root), the best approach is to use 
 ili_weight_transformed <- ili_weight |> 
   mutate(
     # Apply Box-Cox transformaiton to the percent_weight_ili column 
-    percent_weighted_ili_bc = box_cox(percent_weighted_ili, lambda = lambda_optimal)
+    percent_weighted_ili_bc = box_cox(percent_weighted_ili, 
+                                      lambda = lambda_optimal)
   )
 
 # VIew ACF and PACF plots 
@@ -346,7 +350,8 @@ Seasonal spikes near 52	add seasonal MA or AR: (0,1,3)(0,1,1)[52] or (1,1,0)(0,1
 cutoff <- max(ili$week_end) - weeks(52)
 
 # Create Training and Validation sets 
-# Use original ili_weight data so fable can automatically back-transform metric data 
+# Use original ili_weight data so fable can 
+# automatically back-transform metric data 
 ili_trn <- ili_weight |> filter(week_end <= cutoff)
 ili_val <- ili_weight |> filter(week_end > cutoff)
 
@@ -354,19 +359,31 @@ ili_val <- ili_weight |> filter(week_end > cutoff)
 ili_fit <- ili_trn |> 
   model(
     # Auto ARIMA model 
-    ARIMA_auto = ARIMA(box_cox(percent_weighted_ili, lambda_optimal) ~ pandemic + season(period = 52)),
+    ARIMA_auto = ARIMA(box_cox(percent_weighted_ili, 
+                               lambda_optimal) ~ pandemic + 
+                         season(period = 52)),
     # Selected ARIMA Models form ACF/PACF plot 
-    ARIMA_013 = ARIMA(box_cox(percent_weighted_ili, lambda_optimal) ~ pandemic + pdq(0, 1, 3)),
-    ARIMA_110 = ARIMA(box_cox(percent_weighted_ili, lambda_optimal) ~ pandemic + pdq(1, 1, 0)),
-    ARIMA_013_011 = ARIMA(box_cox(percent_weighted_ili, lambda_optimal) ~ pandemic + pdq(0, 1, 3) + PDQ(0, 1, 1)),
-    ARIMA_110_011 = ARIMA(box_cox(percent_weighted_ili, lambda_optimal) ~ pandemic + pdq(1, 1, 0) + PDQ(0, 1, 1)),
+    ARIMA_013 = ARIMA(box_cox(percent_weighted_ili, 
+                              lambda_optimal) ~ pandemic + pdq(0, 1, 3)),
+    ARIMA_110 = ARIMA(box_cox(percent_weighted_ili, 
+                              lambda_optimal) ~ pandemic + pdq(1, 1, 0)),
+    ARIMA_013_011 = ARIMA(box_cox(percent_weighted_ili, 
+                                  lambda_optimal) ~ pandemic + pdq(0, 1, 3) + 
+                            PDQ(0, 1, 1)),
+    ARIMA_110_011 = ARIMA(box_cox(percent_weighted_ili, 
+                                  lambda_optimal) ~ pandemic + pdq(1, 1, 0) + 
+                            PDQ(0, 1, 1)),
     # ETS Model 
     ETS_Model = ETS(box_cox(percent_weighted_ili, lambda_optimal)),
     # TSLM Model with Regressor & Fourier Terms
-    TSLM_Model = TSLM(box_cox(percent_weighted_ili, lambda_optimal) ~ pandemic + trend() + fourier(K = 20, period = 52)),
+    TSLM_Model = TSLM(box_cox(percent_weighted_ili, 
+                              lambda_optimal) ~ pandemic + trend() + 
+                        fourier(K = 20, period = 52)),
     # Seasonal Naive 
     SNAIVE_Model = SNAIVE(box_cox(percent_weighted_ili, lambda_optimal)),
-    SNAIVE_Equivalent = ARIMA(box_cox(percent_weighted_ili, lambda_optimal) ~ 0 + pdq(0, 0, 0) + PDQ(0, 1, 0))
+    SNAIVE_Equivalent = ARIMA(box_cox(percent_weighted_ili, 
+                                      lambda_optimal) ~ 0 + pdq(0, 0, 0) + 
+                                PDQ(0, 1, 0))
     )
 
 # View Auto ARIMA choice 
@@ -414,7 +431,8 @@ acc_52wk <- forecast_52wks |>
   fmt_number(decimals = 2) |> 
   tab_header(
     title= ("Model Accuracy Comparison"),
-    subtitle = ("Forecast performance over 52-week horizon with COVID-19 period **adjusted** (ARIMA and TSLM)"))
+    subtitle = ("Forecast performance over 52-week horizon with 
+                COVID-19 period **adjusted** (ARIMA and TSLM)"))
   
   acc_52wk
   
@@ -478,7 +496,8 @@ ljung_box_results |>
   fmt_number(decimals = 4) |>
   tab_header(
     title = "Ljung-Box Test for Residual Autocorrelation",
-    subtitle = "H₀: Residuals are independently distributed (p > 0.05 suggests adequate model)"
+    subtitle = "H₀: Residuals are independently 
+    distributed (p > 0.05 suggests adequate model)"
   )
 ```
 
@@ -520,7 +539,8 @@ acc_12wk <- forecast_12wks |>
   fmt_number(decimals = 2) |> 
   tab_header(
     title= ("Model Accuracy Comparison (12-Week Horizon)"),
-    subtitle = ("Forecast performance over the first 12 weeks of the validation period"))
+    subtitle = ("Forecast performance over the first 
+                12 weeks of the validation period"))
   
 acc_12wk
 ```
@@ -578,6 +598,12 @@ Short-term → ARIMA_auto
 Long-term → TSLM
 
 CV will allow for systematic evaluation.
+
+- Is ARIMA always better for short horizons?
+- Is TSLM consistently better for long horizons?
+- How stable is each model across different years?
+
+- Does the COVID-19 dummy improve predictive consistency?
 
 #Set-up Time Series Cross-Validation
 
@@ -639,7 +665,8 @@ manual_cv <- function(data, train_years = 2, forecast_weeks = 26) {
   train_weeks <- train_years * 52
   
   # Slide forward in 26-week steps
-  for (start_week in seq(1, total_weeks - train_weeks - forecast_weeks, by = 26)) {
+  for (start_week in seq(1, total_weeks - train_weeks - 
+                         forecast_weeks, by = 26)) {
     
     train_end  <- start_week + train_weeks - 1
     test_start <- train_end + 1
@@ -718,6 +745,130 @@ cv_summary_manual |>
 
 - **Overall Recommendation:** Use a hybrid approach — *ARIMA* for short-term precision and *TSLM (with the pandemic dummy)* for long-term stability.
 
+*CV was not running with COVID-19 dummy variable. Check if the same patterns exist without the pandemic signal. Is the model ranking* 
+
+#### Define a CV version of models without pandemic dummy variable
+```{r}
+ili_fit_candidates_cv <- function(data) {
+  data |>
+    model(
+      TSLM_Model = TSLM(
+        box_cox(percent_weighted_ili, lambda_optimal) ~ 
+          trend() + fourier(K = 20, period = 52)
+      ),
+      ARIMA_auto = ARIMA(
+        box_cox(percent_weighted_ili, lambda_optimal) ~ 
+          season(period = 52)
+      ),
+      SNAIVE_Equivalent = ARIMA(
+        box_cox(percent_weighted_ili, lambda_optimal) ~ 
+          0 + pdq(0, 0, 0) + PDQ(0, 1, 0)
+      )
+    )
+}
+```
 
 
+create a tsibble with cross-validation series that starts with 5 years of data and adds one year at time through 2025. (Hint: use stretch_tsibble)
 
+#### Short-Term Horizon: 12 weeks 
+```{r}
+# CV series: 5-year initial window, step = 1 year (52 weeks)
+ili_cv <- ili_trn |>
+  stretch_tsibble(.init = 52 * 5, .step = 52)
+
+# Fit candidate models + combo for each CV window
+ili_cv_fit_12 <- ili_cv |>
+  ili_fit_candidates_cv() |>
+  mutate(
+    combo = (TSLM_Model + ARIMA_auto + SNAIVE_Equivalent) / 3
+  )
+
+# Forecast 12 weeks ahead for each rolling window
+ili_cv_fc_12 <- ili_cv_fit_12 |>
+  forecast(h = "12 weeks")
+
+# Accuracy: average across all validation periods per model
+cv_metrics_12 <- ili_cv_fc_12 |>
+  accuracy(ili_trn, by = c(".model", ".id")) |>
+  group_by(.model) |>
+  summarise(
+    RMSE = mean(RMSE, na.rm = TRUE),
+    MAE  = mean(MAE,  na.rm = TRUE),
+    MAPE = mean(MAPE, na.rm = TRUE),
+    .groups = "drop"
+  ) |>
+  arrange(RMSE) |>
+  gt() |>
+  fmt_number(columns = c(RMSE, MAE, MAPE), decimals = 1) |>
+  tab_header(
+    title = "Cross-Validation Forecast Accuracy 
+    (5-Year Rolling Origin, 12-Week Horizon)",
+    subtitle = "ILI Net, Training up to 2025"
+  )
+
+cv_metrics_12
+
+```
+The ARIMA_auto mode is the best choice having the lowest RMSE and MAE values. ARIMA_auto remains the top choice for Short-Term Modeling. 
+
+#### Long-Term Horizon: 52 weeks 
+```{r}
+#| warning: false
+# Fit the data 
+ili_cv_fit_52 <- ili_cv |>
+  ili_fit_candidates_cv() |>
+  mutate(
+    combo = (TSLM_Model + ARIMA_auto + SNAIVE_Equivalent) / 3
+  )
+
+# Forecast 52 weeks 
+ili_cv_fc_52 <- ili_cv_fit_52 |>
+  forecast(h = "52 weeks")
+
+# Compute accuracy 
+cv_metrics_52 <- ili_cv_fc_52 |>
+  accuracy(ili_trn, by = c(".model", ".id")) |>
+  group_by(.model) |>
+  summarise(
+    RMSE = mean(RMSE, na.rm = TRUE),
+    MAE  = mean(MAE,  na.rm = TRUE),
+    MAPE = mean(MAPE, na.rm = TRUE),
+    .groups = "drop"
+  ) |>
+  arrange(RMSE) 
+
+# Build the gt table
+gt_cv_metrics_52 <- cv_metrics_52 |>
+  gt() |>
+  fmt_number(columns = c(RMSE, MAE, MAPE), decimals = 1) |>
+  tab_header(
+    title = "Cross-Validation Forecast Accuracy 
+    (5-Year Rolling Origin, 52-Week Horizon)",
+    subtitle = "ILI Net, Training up to 2025"
+  )
+
+gt_cv_metrics_52
+
+
+```
+
+The ARIMA_auto model is the best performer when the pandemic regressor is removed for Cross Validation modeling. TSLM was picked as the top performing model prior to cross validation. Long-horizon forecasting is strongly affected by the pandemic disruption. TSLM performed well previously due to the structural indicator explain the pandemic period. When the regressor is removed TSLM looses this information and becomes less stable. However, ARIMA can approximately absorb structural breaks via differencing.
+
+# Conclusion
+
+For the main 52-week forecast evaluation a COVID-19 dummy (pandemic) was included as a regressor, which improved model behavior around 2020–2021. THis allowed for the TSLM model to better capture long-term trend and seasonal patterns. 
+
+However, for rolling-origin cross-validation simplified models without the pandemic dummy were used. Providing future values for exogenous regressors in every CV fold is non-trivial in fable, and removing the dummy allowed for a clean and consistent comparison of short- versus long-horizon performance across multiple years. The core behavioral patterns of the models remained intact.
+
+Short-term forecast were consistently stable across folds. The ARIMA model achieved the lowest error both with and without the pandemic variable. Indicating that the ARIMA model is structurally well-suited for short-horizon ILI forecasting. 
+
+The long-term model was less stable. In the hold-out evaluation with the pandemic variable the TSLM model produced the strongest long-term horizon performance. However, in cross-validation without the dummy variable, TSLM loss the structural advantage and the ARIMA model outperformed it. This divergence reflects how sensitive long-horizon forecasts are to structural breaks and the regressors used to model them.
+
+Overall, the results highlight two robust themes:
+
+- Short-term forecasting is consistently more reliable, with ARIMA providing the strongest and most stable performance.
+
+- Long-term forecasting is inherently unstable, and TSLM performs best when structural information (such as the pandemic dummy) is included.
+
+The patterns in this analysis reinforce the importance of horizon-specific model selection and show how exogenous variable can meaningfully affect long-range predictions. 
